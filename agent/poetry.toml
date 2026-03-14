@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "audit-agent"
+version = "0.1.0"
+description = "Reference smart contract audit agent"
+authors = ["Your Name <you@example.com>"]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.13"
+slither-analyzer = "^0.10.0"   # main auditing tool
+crytic-compile = "^0.3.6"      # slither dependency
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

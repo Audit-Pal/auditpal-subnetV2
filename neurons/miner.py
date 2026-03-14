@@ -43,27 +43,27 @@ class Miner(BaseMinerNeuron):
         # TODO(developer): Anything specific to your use case you can do here
 
     async def forward(
-        self, synapse: template.protocol.Dummy
-    ) -> template.protocol.Dummy:
+        self, synapse: template.protocol.AuditSynapse
+    ) -> template.protocol.AuditSynapse:
         """
-        Processes the incoming 'Dummy' synapse by performing a predefined operation on the input data.
+        Processes the incoming 'AuditSynapse' synapse by performing a predefined operation on the input data.
         This method should be replaced with actual logic relevant to the miner's purpose.
 
         Args:
-            synapse (template.protocol.Dummy): The synapse object containing the 'dummy_input' data.
+            synapse (template.protocol.AuditSynapse): The synapse object containing the 'AuditSynapse_input' data.
 
         Returns:
-            template.protocol.Dummy: The synapse object with the 'dummy_output' field set to twice the 'dummy_input' value.
+            template.protocol.AuditSynapse: The synapse object with the 'AuditSynapse_output' field set to twice the 'AuditSynapse_input' value.
 
         The 'forward' function is a placeholder and should be overridden with logic that is appropriate for
         the miner's intended operation. This method demonstrates a basic transformation of input data.
         """
         # TODO(developer): Replace with actual implementation logic.
-        synapse.dummy_output = synapse.dummy_input * 2
+        synapse.AuditSynapse_output = synapse.AuditSynapse_input * 2
         return synapse
 
     async def blacklist(
-        self, synapse: template.protocol.Dummy
+        self, synapse: template.protocol.AuditSynapse
     ) -> typing.Tuple[bool, str]:
         """
         Determines whether an incoming request should be blacklisted and thus ignored. Your implementation should
@@ -74,7 +74,7 @@ class Miner(BaseMinerNeuron):
         requests before they are deserialized to avoid wasting resources on requests that will be ignored.
 
         Args:
-            synapse (template.protocol.Dummy): A synapse object constructed from the headers of the incoming request.
+            synapse (template.protocol.AuditSynapse): A synapse object constructed from the headers of the incoming request.
 
         Returns:
             Tuple[bool, str]: A tuple containing a boolean indicating whether the synapse's hotkey is blacklisted,
@@ -126,7 +126,7 @@ class Miner(BaseMinerNeuron):
         )
         return False, "Hotkey recognized!"
 
-    async def priority(self, synapse: template.protocol.Dummy) -> float:
+    async def priority(self, synapse: template.protocol.AuditSynapse) -> float:
         """
         The priority function determines the order in which requests are handled. More valuable or higher-priority
         requests are processed before others. You should design your own priority mechanism with care.
@@ -134,7 +134,7 @@ class Miner(BaseMinerNeuron):
         This implementation assigns priority to incoming requests based on the calling entity's stake in the metagraph.
 
         Args:
-            synapse (template.protocol.Dummy): The synapse object that contains metadata about the incoming request.
+            synapse (template.protocol.AuditSynapse): The synapse object that contains metadata about the incoming request.
 
         Returns:
             float: A priority score derived from the stake of the calling entity.

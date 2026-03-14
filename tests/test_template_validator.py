@@ -24,7 +24,7 @@ import torch
 
 from neurons.validator import Validator
 from template.base.validator import BaseValidatorNeuron
-from template.protocol import Dummy
+from template.protocol import AuditSynapse
 from template.utils.uids import get_random_uids
 from template.validator.reward import get_rewards
 
@@ -59,16 +59,16 @@ class TemplateValidatorNeuronTestCase(unittest.TestCase):
         # TODO: Test that the forward function returns the correct value
         pass
 
-    def test_dummy_responses(self):
-        # TODO: Test that the dummy responses are correctly constructed
+    def test_AuditSynapse_responses(self):
+        # TODO: Test that the AuditSynapse responses are correctly constructed
 
         responses = self.neuron.dendrite.query(
             # Send the query to miners in the network.
             axons=[
                 self.neuron.metagraph.axons[uid] for uid in self.miner_uids
             ],
-            # Construct a dummy query.
-            synapse=Dummy(dummy_input=self.neuron.step),
+            # Construct a AuditSynapse query.
+            synapse=AuditSynapse(AuditSynapse_input=self.neuron.step),
             # All responses have the deserialize function called on them before returning.
             deserialize=True,
         )
@@ -81,8 +81,8 @@ class TemplateValidatorNeuronTestCase(unittest.TestCase):
         responses = self.dendrite.query(
             # Send the query to miners in the network.
             axons=[self.metagraph.axons[uid] for uid in self.miner_uids],
-            # Construct a dummy query.
-            synapse=Dummy(dummy_input=self.neuron.step),
+            # Construct a AuditSynapse query.
+            synapse=AuditSynapse(AuditSynapse_input=self.neuron.step),
             # All responses have the deserialize function called on them before returning.
             deserialize=True,
         )
@@ -97,8 +97,8 @@ class TemplateValidatorNeuronTestCase(unittest.TestCase):
         responses = self.dendrite.query(
             # Send the query to miners in the network.
             axons=[self.metagraph.axons[uid] for uid in self.miner_uids],
-            # Construct a dummy query.
-            synapse=Dummy(dummy_input=self.neuron.step),
+            # Construct a AuditSynapse query.
+            synapse=AuditSynapse(AuditSynapse_input=self.neuron.step),
             # All responses have the deserialize function called on them before returning.
             deserialize=True,
         )

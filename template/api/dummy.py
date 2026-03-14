@@ -19,18 +19,18 @@
 
 import bittensor as bt
 from typing import List, Optional, Union, Any, Dict
-from template.protocol import Dummy
+from template.protocol import AuditSynapse
 from bittensor.subnets import SubnetsAPI
 
 
-class DummyAPI(SubnetsAPI):
+class AuditSynapseAPI(SubnetsAPI):
     def __init__(self, wallet: "bt.wallet"):
         super().__init__(wallet)
         self.netuid = 33
-        self.name = "dummy"
+        self.name = "AuditSynapse"
 
-    def prepare_synapse(self, dummy_input: int) -> Dummy:
-        synapse.dummy_input = dummy_input
+    def prepare_synapse(self, AuditSynapse_input: int) -> AuditSynapse:
+        synapse.AuditSynapse_input = AuditSynapse_input
         return synapse
 
     def process_responses(
@@ -40,5 +40,5 @@ class DummyAPI(SubnetsAPI):
         for response in responses:
             if response.dendrite.status_code != 200:
                 continue
-            return outputs.append(response.dummy_output)
+            return outputs.append(response.AuditSynapse_output)
         return outputs

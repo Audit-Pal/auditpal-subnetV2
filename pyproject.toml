@@ -1,0 +1,39 @@
+[tool.poetry]
+name = "smart-audit-subnet"
+version = "0.1.0"
+description = "Bittensor subnet for smart contract auditing"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+packages = [
+    { include = "auditing" },
+    { include = "template" },
+]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.13"   
+
+# Core — needed by both validator and miner nodes
+httpx = "^0.27.0"         
+pydantic = "^2.7.0"       
+python-dotenv = "^1.0.0"  
+numpy = "2.0.1"
+bittensor = "^10.1.0"
+bittensor-cli = "^9.18.1"
+
+[tool.poetry.group.validator.dependencies]
+# Only the validator node needs Docker SDK
+docker = "^7.1.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "8.3.5"
+pytest-asyncio = "^0.23.0"
+ruff = "^0.4.0"            # linting
+mypy = "^1.10.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+validator = "neurons.validator:main"
+miner     = "neurons.miner:main"
