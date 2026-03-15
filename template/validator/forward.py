@@ -15,15 +15,16 @@ challenge_client = ChallengeClient()
 async def forward(self):
     challenge = await challenge_client.fetch_random_challenge()
     
-    synapse = AuditSynapse(
-        challenge_json=challenge.model_dump_json(by_alias=True)
-    )
+    print(f"Fetched challenge: {challenge}")
+    
 
     miner_uids = get_random_uids(self, k=self.config.neuron.sample_size)
 
     responses = await self.dendrite(
         axons=[self.metagraph.axons[uid] for uid in miner_uids],
-        synapse=AuditSynapse(AuditSynapse_input=self.step),
+        synapse = AuditSynapse(
+        challenge_json=challenge.model_dump_json(by_alias=True)
+        ),
         deserialize=True,
         timeout=self.config.neuron.timeout,
     )

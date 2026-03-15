@@ -17,16 +17,19 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+from pathlib import Path
 import time
 import typing
 import bittensor as bt
+from dotenv import load_dotenv
 
 # Bittensor Miner Template:
 import template
+import os
 
-# import base miner class which takes care of most of the boilerplate
+
 from template.base.miner import BaseMinerNeuron
-
+load_dotenv(Path(__file__).resolve().parent.parent / ".env.miner")
 
 class Miner(BaseMinerNeuron):
     """
@@ -58,8 +61,14 @@ class Miner(BaseMinerNeuron):
         The 'forward' function is a placeholder and should be overridden with logic that is appropriate for
         the miner's intended operation. This method demonstrates a basic transformation of input data.
         """
-        # TODO(developer): Replace with actual implementation logic.
         
+        # TODO(developer): Replace with actual implementation logic.
+        self.agent_repo_url = os.getenv("AGENT_REPO_URL")
+        if not self.agent_repo_url:
+            raise EnvironmentError("AGENT_REPO_URL must be set in the environment variables.")
+        bt.logging.info(f"Using agent repo URL {self.agent_repo_url}")
+       
+        synapse.agent_repo_url = self.agent_repo_url
         return synapse
 
     async def blacklist(
