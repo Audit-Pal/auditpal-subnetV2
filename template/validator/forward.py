@@ -19,10 +19,26 @@
 
 import time
 import bittensor as bt
-
+import requests
 from template.protocol import AuditSynapse
 from template.validator.reward import get_rewards
 from template.utils.uids import get_random_uids
+import dotenv
+from auditing.challenge_client import ChallengeClient
+
+challenge_client = ChallengeClient()
+
+async def get_challenge():
+    """
+    Fetches a random challenge from the Challenge API.
+
+    Returns:
+        dict: A dictionary containing the challenge data, including project_id, challenge_id, challenge_name, and codebases.
+    """
+    return await challenge_client.fetch_random_challenge()
+    
+
+
 
 
 async def forward(self):
@@ -35,6 +51,12 @@ async def forward(self):
         self (:obj:`bittensor.neuron.Neuron`): The neuron object which contains all the necessary state for the validator.
 
     """
+    
+    challenge = await get_challenge()
+    
+    synapse = AuditSynapse(
+        challenge_json=challenge.model_dump_json(by_alias=True)
+    )
     # TODO(developer): Define how the validator selects a miner to query, how often, etc.
     # get_random_uids is an example method, but you can replace it with your own.
     miner_uids = get_random_uids(self, k=self.config.neuron.sample_size)
@@ -48,6 +70,7 @@ async def forward(self):
         # All responses have the deserialize function called on them before returning.
         # You are encouraged to define your own deserialization function.
         deserialize=True,
+        timeout=self.config.neuron.timeout,
     )
 
     # Log the results for monitoring purposes.

@@ -1,39 +1,37 @@
 from pydantic import BaseModel, Field
 from typing import Optional
 
-# --- Challenge API models ---
-
 class Codebase(BaseModel):
     codebase_id: str
     repo_url: str
-    commit: str                          # may be "" or "main" — handle both
-    tarball_url: str                     # prefer this over git clone — faster
+    commit: str                         
+    tarball_url: str                    
     tree_url: str = ""
 
 class Challenge(BaseModel):
     id: str = Field(alias="_id")
-    project_id: str                      # KEY — used to fetch report
+    project_id: str                      
     name: str
-    platform: str                        # "code4rena" | "sherlock" | "cantina"
+    platform: str                       
     codebases: list[Codebase]
     created_at: str
     updated_at: str
 
     model_config = {"populate_by_name": True}
 
-# --- Report API models (ground truth) ---
+
 
 class GroundTruthFinding(BaseModel):
     id: str
     title: str
     description: str
     vulnerability_type: str
-    severity: str                        # "high" | "medium" | "low" | "info"
-    confidence: float                    # 0.0–1.0
-    file: str                            # "AaveV3FiatReserve.sol"
+    severity: str                       
+    confidence: float                    
+    file: str                            
     location: str
     reported_by_model: str
-    status: str                          # "proposed"
+    status: str                          
 
 class ChallengeReport(BaseModel):
     id: str = Field(alias="_id")
@@ -45,11 +43,11 @@ class ChallengeReport(BaseModel):
 
     model_config = {"populate_by_name": True}
 
-# --- Miner output models ---
+
 
 class MinerFinding(BaseModel):
-    file: str                            # must match a .sol file in the repo
-    severity: str                        # "high" | "medium" | "low" | "info"
+    file: str                            
+    severity: str                        
     vulnerability_type: str
     title: str
     description: str

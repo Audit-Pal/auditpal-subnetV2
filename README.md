@@ -113,9 +113,9 @@ These can be implemented as extensions of the generic `SubnetsAPI` interface.  E
 This is abstract, generic, and takes(`*args`, `**kwargs`) for flexibility. See the extremely simple base class:
 ```python
 class SubnetsAPI(ABC):
-    def __init__(self, wallet: "bt.wallet"):
+    def __init__(self, wallet: "bt.Wallet"):
         self.wallet = wallet
-        self.dendrite = bt.dendrite(wallet=wallet)
+        self.dendrite = bt.Dendrite(wallet=wallet)
 
     async def __call__(self, *args, **kwargs):
         return await self.query_api(*args, **kwargs)
@@ -144,7 +144,7 @@ from bittensor.subnets import SubnetsAPI
 from MySubnet import MySynapse
 
 class MySynapseAPI(SubnetsAPI):
-    def __init__(self, wallet: "bt.wallet"):
+    def __init__(self, wallet: "bt.Wallet"):
         super().__init__(wallet)
         self.netuid = 99
 

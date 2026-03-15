@@ -33,11 +33,11 @@ from auditing.models import Codebase
 #   def AuditSynapse( synapse: AuditSynapse ) -> AuditSynapse:
 #       synapse.AuditSynapse_output = synapse.AuditSynapse_input + 1
 #       return synapse
-#   axon = bt.axon().attach( AuditSynapse ).serve(netuid=...).start()
+#   axon = bt.Axon().attach( AuditSynapse ).serve(netuid=...).start()
 
 # ---- validator ---
 # Example usage:
-#   dendrite = bt.dendrite()
+#   dendrite = bt.Dendrite()
 #   AuditSynapse_output = dendrite.query( AuditSynapse( AuditSynapse_input = 1 ) )
 #   assert AuditSynapse_output == 2
 
@@ -53,12 +53,15 @@ class AuditSynapse(bt.Synapse):
     - AuditSynapse_output: An optional integer value which, when filled, represents the response from the miner.
     """
 
-    challenge_id: str = ""
-    project_id: str = ""
-    challenge_name: str = ""
-    codebases: list[Codebase] = Field(default_factory=list)
-   
-    report_json: typing.Optional[str] = None
+    challenge_json: str = Field(
+        default="",
+        description="A JSON string representing the challenge data sent by the validator to the miner."
+    )
+    
+    agent_repo_url: typing.Optional[str] = Field(
+        default=None,
+        description="An optional string representing the repository URL of the agent, if applicable."
+    )
 
     def deserialize(self) -> int:
         """
@@ -76,4 +79,4 @@ class AuditSynapse(bt.Synapse):
         >>> AuditSynapse_instance.deserialize()
         5
         """
-        return self.AuditSynapse_output
+        return self.report_json

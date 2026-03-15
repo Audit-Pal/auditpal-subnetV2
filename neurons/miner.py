@@ -59,7 +59,7 @@ class Miner(BaseMinerNeuron):
         the miner's intended operation. This method demonstrates a basic transformation of input data.
         """
         # TODO(developer): Replace with actual implementation logic.
-        synapse.AuditSynapse_output = synapse.AuditSynapse_input * 2
+        
         return synapse
 
     async def blacklist(
