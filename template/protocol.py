@@ -79,4 +79,4 @@ class AuditSynapse(bt.Synapse):
         >>> AuditSynapse_instance.deserialize()
         5
         """
-        return self.report_json
+        return self.agent_repo_url
