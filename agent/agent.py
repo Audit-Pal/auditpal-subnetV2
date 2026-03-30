@@ -37,7 +37,7 @@ def find_sol_files() -> list[Path]:
     log.info("Found %d Solidity file(s).", len(sols))
     return sols
 
-
+    
 def run_slither(sol_path: Path) -> list[dict]:
     log.info("Running Slither on %s", sol_path)
     try:
@@ -109,6 +109,7 @@ def write_report(findings: list[dict], status: str = "ok") -> None:
 def main() -> None:
     try:
         sol_files = find_sol_files()
+
         all_findings: list[dict] = []
         for sol in sol_files:
             all_findings.extend(run_slither(sol))

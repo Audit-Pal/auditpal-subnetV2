@@ -1,3 +1,4 @@
 slither-analyzer
 crytic-compile
 google-generativeai
+google-genai

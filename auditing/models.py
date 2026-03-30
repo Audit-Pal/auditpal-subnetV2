@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import List, Optional, Union
 
 class Codebase(BaseModel):
     codebase_id: str
@@ -28,7 +28,7 @@ class GroundTruthFinding(BaseModel):
     severity: str                       
     confidence: float                    
     file: str                            
-    location: str
+    location: Union[str, List[str]] 
     reported_by_model: str
     status: str                          
 
@@ -50,7 +50,7 @@ class MinerFinding(BaseModel):
     vulnerability_type: str
     title: str
     description: str
-    location: Optional[str] = None
+    location: Union[str, List[str]] 
 
 class AuditReport(BaseModel):
     challenge_id: str
