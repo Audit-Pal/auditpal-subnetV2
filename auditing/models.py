@@ -16,7 +16,6 @@ class Challenge(BaseModel):
     codebases: list[Codebase]
     created_at: str
     updated_at: str
-
     model_config = {"populate_by_name": True}
 
 

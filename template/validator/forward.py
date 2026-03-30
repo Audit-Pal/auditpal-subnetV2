@@ -18,7 +18,7 @@ sandbox          = SandboxRunner()
 
 async def forward(self):
     challenge = await challenge_client.fetch_random_challenge()
-
+    ground_truth = await challenge_client.fetch_report(challenge.project_id)
     miner_uids = get_random_uids(self, k=self.config.neuron.sample_size)
 
     responses = await self.dendrite(
@@ -39,8 +39,7 @@ async def forward(self):
 
     bt.logging.info(f"Reports: {[r is not None for r in reports]}")
 
-    rewards = get_rewards(self, query=self.step, responses=reports)
+    rewards = get_rewards(self, reports=reports, ground_truth=ground_truth)
 
     bt.logging.info(f"Scored responses: {rewards}")
     self.update_scores(rewards, miner_uids)
-    time.sleep(5)

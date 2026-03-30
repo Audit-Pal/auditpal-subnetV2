@@ -1,15 +1,13 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-if [ ! -f /agent/agent.py ]; then
-    echo '{"challenge_id":"","project_id":"","findings":[]}' > /output/report.json
-    echo "[entrypoint] ERROR: agent.py not found at /agent/agent.py"
-    exit 1
+echo "[entrypoint] PWD=$(pwd)" >&2
+echo "[entrypoint] Checking /agent..." >&2
+
+if [ ! -f "/agent/agent.py" ]; then
+  echo '{"status":"error","error":"agent.py not found in /agent"}'
+  exit 1
 fi
 
-if [ -f /agent/requirements.txt ]; then
-    pip install --no-cache-dir -q -r /agent/requirements.txt
-fi
-
-cd /agent
-python agent.py
+echo "[entrypoint] Launching runner..." >&2
+exec python /app/runner.py

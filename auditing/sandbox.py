@@ -47,13 +47,13 @@ class SandboxRunner:
       2. download challenge tarball     (network OK — before container starts)
       3. docker run                     (network=none, read-only, tmpfs /output)
       4. wait up to SANDBOX_TIMEOUT_S
-      5. extract /output/report.json
+      5. read report JSON from container stdout
       6. container.remove(force=True)   (always — even on failure)
     """
 
-    IMAGE_NAME        = "audit-sandbox:latest"
+    IMAGE_NAME        = "my-test-agent:latest"
     CLONE_TIMEOUT_S   = 60
-    SANDBOX_TIMEOUT_S = int(os.getenv("SANDBOX_TIMEOUT", "300"))
+    SANDBOX_TIMEOUT_S = int(os.getenv("SANDBOX_TIMEOUT", "100"))
     MAX_CONCURRENT    = int(os.getenv("MAX_CONCURRENT_SANDBOXES", "8"))
 
     def __init__(self):
@@ -75,30 +75,24 @@ class SandboxRunner:
         _ok(f"Image built in {time.time() - t0:.1f}s")
 
     async def run_all(
-        self,
-        repo_urls: list[Optional[str]],
-        challenge: Challenge,
-    ) -> list[Optional[AuditReport]]:
-        """
-        Run one sandbox per miner in parallel.
-
-        Args:
-            repo_urls : one agent_repo_url per miner UID — None = timed out
-            challenge : parsed Challenge from the API
-
-        Returns:
-            list of AuditReport | None — same length as repo_urls
-        """
+    self,
+    repo_urls: list[Optional[str]],
+    challenge: Challenge,
+) -> list[Optional[AuditReport]]:
         if self._semaphore is None:
             self._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT)
 
+        # Only miners with actual repo URLs
+        valid_miners = [(i, url) for i, url in enumerate(repo_urls) if url]
+
         total     = len(repo_urls)
-        responded = sum(1 for u in repo_urls if u)
+        responded = len(valid_miners)
+        skipped   = total - responded
 
         _step("run_all — starting parallel sandbox execution")
         _info(f"Total miners    : {total}")
         _info(f"Responded       : {responded}")
-        _info(f"Skipped (no URL): {total - responded}")
+        _info(f"Skipped (no URL): {skipped}")
         _info(f"Challenge       : {challenge.name}  ({challenge.project_id})")
         _info(f"Codebases       : {len(challenge.codebases)}")
         print()
@@ -106,13 +100,10 @@ class SandboxRunner:
         loop = asyncio.get_running_loop()
         t0   = time.time()
 
-        async def _run_one(idx: int, repo_url: Optional[str]) -> Optional[AuditReport]:
-            if not repo_url:
-                _warn(f"[miner {idx}] No repo URL — skipping (score=0)")
-                return None
+        async def _run_one(idx: int, repo_url: str) -> Optional[AuditReport]:
+            short = repo_url.rstrip("/").split("/")[-1]
+            _info(f"[miner {idx}] Launching sandbox → {short}")
             async with self._semaphore:
-                short = repo_url.rstrip("/").split("/")[-1]
-                _info(f"[miner {idx}] Launching sandbox → {short}")
                 result = await loop.run_in_executor(
                     None, self._run_sync, idx, repo_url, challenge
                 )
@@ -120,23 +111,30 @@ class SandboxRunner:
                     _err(f"[miner {idx}] No report produced")
                 else:
                     _ok(f"[miner {idx}] {len(result.findings)} finding(s) returned")
-                return result
+            return result
 
         results = await asyncio.gather(
-            *[_run_one(i, url) for i, url in enumerate(repo_urls)],
+            *[_run_one(idx, url) for idx, url in valid_miners],
             return_exceptions=False,
         )
 
         elapsed   = time.time() - t0
         succeeded = sum(1 for r in results if r is not None)
-        failed    = total - succeeded
+        failed    = len(valid_miners) - succeeded
 
         print()
         _step("run_all — finished")
-        _ok(f"Succeeded : {succeeded} / {total}")
-        (_err if failed else _ok)(f"Failed    : {failed} / {total}")
+        _ok(f"Succeeded : {succeeded} / {len(valid_miners)}")
+        (_err if failed else _ok)(f"Failed    : {failed} / {len(valid_miners)}")
+        _info(f"Skipped   : {skipped}")
         _info(f"Wall time : {elapsed:.1f}s")
-        return list(results)
+
+        # Pad results with None for skipped miners to maintain original order
+        full_results: list[Optional[AuditReport]] = [None] * total
+        for (idx, _), res in zip(valid_miners, results):
+            full_results[idx] = res
+
+        return full_results
 
     # ── sync internals (called from thread pool) ──────────────────────────────
 
@@ -162,6 +160,7 @@ class SandboxRunner:
 
             # step 2 ── challenge files
             print(f"\n{tag} ── Step 2/5: download challenge files")
+            
             if not self._prepare_challenge(tag, challenge, challenge_dir):
                 return None
 
@@ -170,7 +169,13 @@ class SandboxRunner:
             try:
                 container = self._run_container(agent_dir, challenge_dir, challenge)
                 _ok(f"{tag} Container started: {container.short_id}")
-                _dim(f"{tag} Flags: network=none | read-only FS | 2 GB RAM | 1 vCPU | tmpfs /output")
+                _dim(f"{tag} Flags: read-only FS | 2 GB RAM | 1 vCPU")
+                exec_result = container.exec_run("ls -la /agent")
+                print(exec_result.output.decode())
+
+                # List /challenge files
+                exec_result = container.exec_run("ls -la /challenge")
+                print(exec_result.output.decode())  
             except Exception as exc:
                 _err(f"{tag} Failed to start container: {exc}")
                 return None
@@ -181,24 +186,11 @@ class SandboxRunner:
             try:
                 result    = container.wait(timeout=self.SANDBOX_TIMEOUT_S)
                 exit_code = result.get("StatusCode", -1)
+                
                 elapsed   = time.time() - t0
                 ((_ok if exit_code == 0 else _warn))(
                     f"{tag} Container exited {exit_code} in {elapsed:.1f}s"
                 )
-
-                # always print container logs for visibility
-                try:
-                    logs = container.logs(tail=30).decode("utf-8", errors="replace").strip()
-                    if logs:
-                        print(f"\n{_D}  ╔── container stdout (last 30 lines) ──╗{_R}")
-                        for line in logs.splitlines():
-                            _dim(f"{tag}   {line}")
-                        print(f"{_D}  ╚──────────────────────────────────────╝{_R}")
-                    else:
-                        _warn(f"{tag} Container produced no stdout")
-                except Exception:
-                    pass
-
             except Exception:
                 _err(f"{tag} TIMEOUT after {time.time() - t0:.0f}s — killing container")
                 try:
@@ -208,8 +200,8 @@ class SandboxRunner:
                 self._cleanup(tag, container)
                 return None
 
-            # step 5 ── extract report
-            print(f"\n{tag} ── Step 5/5: extract /output/report.json")
+            # step 5 ── read report from stdout
+            print(f"\n{tag} ── Step 5/5: read report from container stdout")
             report = self._extract_report(tag, container, challenge)
 
             # always destroy
@@ -275,7 +267,7 @@ class SandboxRunner:
                         if m.name.endswith(".sol") and m.isfile()
                     ]
                     for m in sol_members:
-                        m.name = Path(m.name).name   # flatten path
+                        m.name = Path(m.name).name
                         tar.extract(m, path=cb_dir)
 
                 sols = list(cb_dir.glob("*.sol"))
@@ -306,12 +298,11 @@ class SandboxRunner:
             "PROJECT_ID":     challenge.project_id,
             "CHALLENGE_NAME": challenge.name,
             "PLATFORM":       challenge.platform,
-            "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", ""),  # ← add this
-        }       
+            "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", ""),
+        }
         _dim(f"  env  : {list(env.keys())}")
         _dim(f"  vol  : {agent_dir} → /agent (ro)")
         _dim(f"  vol  : {challenge_dir} → /challenge (ro)")
-        _dim(f"  vol  : tmpfs → /output (rw, 64 MB)")
 
         return self.client.containers.run(
             image=self.IMAGE_NAME,
@@ -321,9 +312,7 @@ class SandboxRunner:
                 str(challenge_dir): {"bind": "/challenge", "mode": "ro"},
             },
             tmpfs={
-                "/output": "size=64m,mode=1777",
-                "/tmp":    "size=128m,mode=1777"
-
+                "/tmp": "size=128m,mode=1777",
             },
             environment=env,
             network_mode="none",
@@ -343,23 +332,40 @@ class SandboxRunner:
     ) -> Optional[AuditReport]:
         raw = ""
         try:
-            bits, _   = container.get_archive("/output/report.json")
-            tar_bytes = b"".join(bits)
-            _ok(f"{tag} /output/report.json found")
+            # Read JSON report from stdout instead of /output/report.json
+            stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace").strip()
+            print(f"\n{_D}  ╔── container stdout ──╗{_R}")
+            for line in stdout.splitlines():
+                _dim(f"{tag}   {line}")
+            print(f"{_D}  ╚──────────────────────╝{_R}\n")
+            if not stdout:
+                _err(f"{tag} Container produced no stdout — agent crashed or timed out")
+                try:
+                    stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace").strip()
+                    if stderr:
+                        print(f"\n{_D}  ╔── container stderr ──╗{_R}")
+                        for line in stderr.splitlines():
+                            _dim(f"{tag}   {line}")
+                        print(f"{_D}  ╚──────────────────────╝{_R}")
+                except Exception:
+                    pass
+                return None
 
-            with tarfile.open(fileobj=io.BytesIO(tar_bytes)) as tar:
-                f = tar.extractfile(tar.getmember("report.json"))
-                if f is None:
-                    _err(f"{tag} report.json is empty in tar archive")
-                    return None
-                raw = f.read().decode("utf-8")
+            # Find the start of the JSON blob (skip any non-JSON lines)
+            raw = stdout
+            for line in stdout.splitlines():
+                if line.strip().startswith("{"):
+                    raw = stdout[stdout.index(line):]
+                    break
 
+            _ok(f"{tag} Report received from stdout")
             _dim(f"{tag} JSON size: {len(raw)} chars")
+
             preview = raw[:500] + ("..." if len(raw) > 500 else "")
-            print(f"\n{_D}  ╔── report.json preview ──╗{_R}")
+            print(f"\n{_D}  ╔── report preview ──╗{_R}")
             for line in preview.splitlines():
                 _dim(f"{tag}   {line}")
-            print(f"{_D}  ╚─────────────────────────╝{_R}\n")
+            print(f"{_D}  ╚────────────────────╝{_R}\n")
 
             data   = json.loads(raw)
             report = AuditReport.model_validate(data)
@@ -390,20 +396,8 @@ class SandboxRunner:
             )
             return report
 
-        except KeyError:
-            _warn(f"{tag} /output/report.json not found — agent crashed or timed out")
-            try:
-                logs = container.logs().decode("utf-8", errors="replace").strip()
-                if logs:
-                    print(f"\n{_D}  ╔── full container logs ──╗{_R}")
-                    for line in logs.splitlines():
-                        _dim(f"{tag}   {line}")
-                    print(f"{_D}  ╚─────────────────────────╝{_R}")
-            except Exception:
-                pass
-
         except json.JSONDecodeError as exc:
-            _err(f"{tag} Invalid JSON in report.json: {exc}")
+            _err(f"{tag} Invalid JSON in stdout: {exc}")
             _dim(f"{tag} Raw (first 300 chars): {raw[:300]}")
 
         except ValidationError as exc:
@@ -428,3 +422,4 @@ class SandboxRunner:
             _ok(f"{tag} Container {container.short_id} destroyed")
         except Exception as exc:
             _warn(f"{tag} Could not remove container: {exc}")
+        
