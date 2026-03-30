@@ -1,0 +1,3 @@
+slither-analyzer
+crytic-compile
+google-generativeai
