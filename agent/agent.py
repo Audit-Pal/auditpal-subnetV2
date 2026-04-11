@@ -1,123 +1,322 @@
-import sys
+#!/usr/bin/env python3
+"""
+Bittensor Smart Contract Audit Agent — 2-Pass Analysis
+Pass 1 : Contract overview & attack surface mapping
+Pass 2 : Deep per-function vulnerability analysis
+Model  : gemini-2.5-flash
+"""
+import subprocess
+import tempfile
+from pathlib import Path
+import re
 import json
 import logging
 import os
-import subprocess
-from pathlib import Path
+import time
+from typing import Any, Dict, List
+
+from google import genai
+from google.genai import types
+
+
+
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    stream=sys.stderr,
+    format="%(asctime)s %(levelname)s %(message)s",
 )
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
-CHALLENGE_DIR    = Path("/challenge")
-OUTPUT_FILE      = Path("/output/report.json")
-SLITHER_TIMEOUT  = int(os.environ.get("SLITHER_TIMEOUT", "120"))
-CHALLENGE_ID     = os.environ.get("CHALLENGE_ID", "")
-PROJECT_ID       = os.environ.get("PROJECT_ID", "")
-SEVERITY_ALLOWED = {"high", "medium", "low", "info"}
-SKIP_DIRS        = {"node_modules", "lib", "vendor", ".git"}
+GEMINI_MODEL = "gemini-2.5-flash"
+MAX_RETRIES  = 3
+RETRY_DELAY  = 2  # seconds
 
 
-def find_sol_files() -> list[Path]:
-    sols: list[Path] = []
-    for cb_dir in sorted(CHALLENGE_DIR.iterdir()):
-        if cb_dir.is_dir() and cb_dir.name not in SKIP_DIRS:
-            sols.extend(sorted(cb_dir.glob("*.sol")))
+# ─────────────────────────────────────────────────────────────────────────────
+# Gemini wrapper with retry
+# ─────────────────────────────────────────────────────────────────────────────
+class GeminiClient:
+    def __init__(self, api_key: str):
+        if api_key:
+            self._client = genai.Client(api_key=api_key)
+            self.available = True
+            logger.info("Gemini ready: %s", GEMINI_MODEL)
+        else:
+            self._client = None
+            self.available = False
+            logger.warning("Gemini unavailable — no API key")
 
-    if not sols:
-        log.warning("No .sol files in immediate subdirs; falling back to rglob.")
-        sols = [
-            p for p in sorted(CHALLENGE_DIR.rglob("*.sol"))
-            if not any(skip in p.parts for skip in SKIP_DIRS)
-        ]
+    def call(self, prompt: str, json_mode: bool = True) -> str:
+        if not self.available:
+            return "{}"
 
-    log.info("Found %d Solidity file(s).", len(sols))
-    return sols
-
-
-def run_slither(sol_path: Path) -> list[dict]:
-    log.info("Running Slither on %s", sol_path)
-    try:
-        result = subprocess.run(
-            ["slither", str(sol_path), "--json", "-", "--disable-color"],
-            capture_output=True,
-            text=True,
-            timeout=SLITHER_TIMEOUT,
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json" if json_mode else "text/plain"
         )
-    except FileNotFoundError:
-        log.error("slither not found in PATH — is it installed?")
-        return []
-    except subprocess.TimeoutExpired:
-        log.warning("Slither timed out on %s (limit: %ds)", sol_path, SLITHER_TIMEOUT)
-        return []
 
-    if result.stderr:
-        log.debug("slither stderr:\n%s", result.stderr[:2000])
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = self._client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=prompt,
+                    config=config,
+                )
+                return response.text
+            except Exception as exc:
+                logger.warning("Gemini attempt %d/%d failed: %s", attempt, MAX_RETRIES, exc)
+                if attempt < MAX_RETRIES:
+                    time.sleep(RETRY_DELAY * attempt)
+        return "{}"
 
-    if not result.stdout.strip():
-        log.warning("Slither produced no output for %s (exit %d)", sol_path, result.returncode)
-        return []
 
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        log.error("JSON parse error for %s: %s", sol_path, exc)
-        return []
+# ─────────────────────────────────────────────────────────────────────────────
+# 2-Pass analyser
+# ─────────────────────────────────────────────────────────────────────────────
 
-    findings: list[dict] = []
-    for detector in data.get("results", {}).get("detectors", []):
-        raw_severity = detector.get("impact", "info").lower()
-        severity = raw_severity if raw_severity in SEVERITY_ALLOWED else "info"
+class TwoPassAnalyser:
 
-        elements = detector.get("elements", [])
-        line: int | None = None
-        if elements:
-            lines = elements[0].get("source_mapping", {}).get("lines", [])
-            line = lines[0] if lines else None
+    def __init__(self, gemini: GeminiClient):
+        self.gemini = gemini
 
-        description = detector.get("description", "")
-        findings.append({
-            "file":               sol_path.name,
-            "line":               line,
+    # ── Pass 1: Overview & attack surface ────────────────────────────────────
+
+    def pass1_overview(self, contracts: Dict[str, str]) -> Dict[str, Any]:
+        logger.info("[Pass 1] Contract overview & attack surface mapping")
+
+        combined = "\n\n".join(
+            f"// === FILE: {Path(fp).name} ===\n{src}"
+            for fp, src in contracts.items()
+        )
+
+        prompt = f"""You are a senior smart-contract auditor performing initial triage.
+
+Below are all Solidity contracts in this project:
+
+{combined}
+
+For each contract identify:
+1. Its purpose (1-2 sentences)
+2. Privileged roles / access control owners
+3. All external calls (to other contracts or tokens)
+4. Critical state variables (balances, ownership, flags)
+5. High-risk functions that warrant deeper analysis
+
+Respond ONLY with valid JSON:
+{{
+  "contracts": {{
+    "<ContractName>": {{
+      "purpose": "str",
+      "privileged_roles": ["str"],
+      "external_calls": ["str"],
+      "critical_state_vars": ["str"],
+      "risk_areas": ["functionName or pattern"]
+    }}
+  }},
+  "global_risks": ["any cross-contract risk worth noting"]
+}}"""
+
+        raw  = self.gemini.call(prompt)
+        data = _parse_json(raw)
+        logger.info("[Pass 1] Mapped %d contract(s)", len(data.get("contracts", {})))
+        return data
+
+    # ── Pass 2: Deep per-function vulnerability analysis ─────────────────────
+
+    def pass2_deep_analysis(
+        self,
+        contracts: Dict[str, str],
+        overview: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        logger.info("[Pass 2] Deep per-function vulnerability analysis")
+        all_findings: List[Dict[str, Any]] = []
+        contract_overviews = overview.get("contracts", {})
+
+        for file_path, source in contracts.items():
+            name = Path(file_path).name
+            stem = Path(file_path).stem
+            ov   = contract_overviews.get(stem) or contract_overviews.get(name) or {}
+
+            risk_areas = ov.get("risk_areas", [])
+            ext_calls  = ov.get("external_calls", [])
+            roles      = ov.get("privileged_roles", [])
+
+            risk_hint = (
+                f"High-risk areas from Pass 1: {', '.join(risk_areas)}\n"
+                f"External calls: {', '.join(ext_calls)}\n"
+                f"Privileged roles: {', '.join(roles)}"
+                if ov else "No prior triage — analyse all functions."
+            )
+
+            prompt = f"""You are a senior smart-contract auditor performing deep vulnerability analysis.
+
+FILE: {name}
+{risk_hint}
+
+```solidity
+{source}
+```
+
+Analyse EVERY function for:
+- Reentrancy (cross-function, cross-contract, read-only)
+- Access control bypass
+- Integer overflow / underflow
+- Unchecked return values
+- Timestamp / block dependency
+- Front-running / MEV exposure
+- Checks-effects-interactions violations
+- Denial of service vectors
+- Logic errors / invariant violations
+- tx.origin misuse
+
+For each finding provide exact line reference, severity justification, and a brief exploit scenario.
+
+Respond ONLY with valid JSON:
+{{
+  "findings": [
+    {{
+      "title": "str",
+      "description": "str (detailed — why is it exploitable?)",
+      "vulnerability_type": "str",
+      "severity": "high|medium|low|info",
+      "confidence": 0.0,
+      "line_number": 1,
+      "function_name": "str",
+      "exploit_scenario": "str",
+      "recommendation": "str"
+    }}
+  ]
+}}"""
+
+            raw      = self.gemini.call(prompt)
+            data     = _parse_json(raw)
+            findings = data.get("findings", []) if isinstance(data, dict) else []
+            for f in findings:
+                f["file"] = name
+            all_findings.extend(findings)
+            logger.info("[Pass 2] %s → %d finding(s)", name, len(findings))
+
+        return all_findings
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Normalise to AuditReport schema
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _normalise(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out  = []
+    seen = set()
+    for f in findings:
+        severity = f.get("severity", "info").lower()
+        if severity not in ("high", "medium", "low", "info"):
+            severity = "info"
+
+        file_name = f.get("file", "unknown.sol")
+        line_no   = max(1, int(f.get("line_number", 1)))
+        title     = f.get("title", "Untitled finding")
+
+        key = (file_name, line_no, title.lower()[:60])
+        if key in seen:
+            continue
+        seen.add(key)
+
+        out.append({
+            "file":               file_name,
+            "line":               line_no,
             "severity":           severity,
-            "vulnerability_type": detector.get("check", "unknown"),
-            "title":              description[:120],
-            "description":        description,
-            "location":           detector.get("first_markdown_element", ""),
+            "vulnerability_type": f.get("vulnerability_type", "unknown"),
+            "title":              title,
+            "description":        f.get("description", ""),
+            "location":           f"{file_name}:{line_no}",
         })
 
-    log.info("  → %d finding(s) from %s", len(findings), sol_path.name)
-    return findings
+    order = {"high": 0, "medium": 1, "low": 2, "info": 3}
+    out.sort(key=lambda x: order.get(x["severity"], 4))
+    return out
 
 
-def write_report(findings: list[dict], status: str = "ok") -> None:
-    report = {
-        "challenge_id": CHALLENGE_ID,
-        "project_id":   PROJECT_ID,
+def build_contracts_from_codebase(codebase: Dict[str, Any]) -> Dict[str, str]:
+    repo_url = codebase["repo_url"]
+    tmp_dir  = tempfile.mkdtemp()
+
+    subprocess.run(
+        ["git", "clone", "--depth", "1", repo_url, tmp_dir],
+        check=True
+    )
+
+    contracts = {}
+    for path in Path(tmp_dir).rglob("*.sol"):
+        try:
+            contracts[str(path)] = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            pass
+    return contracts
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entrypoint
+# ─────────────────────────────────────────────────────────────────────────────
+
+def agent_main(task: Dict[str, Any]) -> Dict[str, Any]:
+    challenge_id = task.get("_id") or task.get("challenge_id", "")
+    project_id   = task.get("project_id", "")
+
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    gemini  = GeminiClient(api_key)
+    analyser = TwoPassAnalyser(gemini)
+
+    # Runner already read /challenge and passed contracts directly
+    contracts = task.get("contracts", {})
+
+    if not contracts:
+        logger.error("No contracts in task — /challenge may be empty")
+        return {"challenge_id": challenge_id, "project_id": project_id, "findings": []}
+
+    logger.info("Loaded %d contract(s) from task", len(contracts))
+    for path in contracts:
+        logger.info("  → %s", path)
+
+    # Pass 1
+    overview = analyser.pass1_overview(contracts)
+
+    # Pass 2
+    raw_findings = analyser.pass2_deep_analysis(contracts, overview)
+
+    findings = _normalise(raw_findings)
+
+    logger.info(
+        "Analysis complete — %d finding(s) [H:%d M:%d L:%d I:%d]",
+        len(findings),
+        sum(1 for f in findings if f["severity"] == "high"),
+        sum(1 for f in findings if f["severity"] == "medium"),
+        sum(1 for f in findings if f["severity"] == "low"),
+        sum(1 for f in findings if f["severity"] == "info"),
+    )
+
+    return {
+        "challenge_id": challenge_id,
+        "project_id":   project_id,
         "findings":     findings,
-        "status":       status,
     }
-    payload = json.dumps(report, indent=2)
-
-    # Print to stdout for console visibility
-    print(payload)
-
-   
-def main() -> None:
-    try:
-        sol_files = find_sol_files()
-        all_findings: list[dict] = []
-        for sol in sol_files:
-            all_findings.extend(run_slither(sol))
-        write_report(all_findings, status="ok")
-    except Exception as exc:
-        log.exception("Fatal error during analysis: %s", exc)
-        write_report([], status=f"error: {exc}")
-        sys.exit(1)
-
-
 if __name__ == "__main__":
-    main()
+    task = {
+        "_id": "695827d811998fe379983ccf",
+        "project_id": "sherlock_crestal-network_2025_03",
+        "__v": 0,
+        "codebases": [
+            {
+                "codebase_id": "Crestal Network_dc45e9",
+                "repo_url": "https://github.com/crestalnetwork/crestal-omni-contracts",
+                "commit": "dc45e98af5e247dce5bbe53b0bd5b1f256884f84",
+                "tree_url": "https://github.com/crestalnetwork/crestal-omni-contracts/tree/dc45e98af5e247dce5bbe53b0bd5b1f256884f84",
+                "tarball_url": "https://github.com/crestalnetwork/crestal-omni-contracts/archive/dc45e98af5e247dce5bbe53b0bd5b1f256884f84.tar.gz",
+                "_id": "695838db16c9f665c010f695"
+            }
+        ],
+        "created_at": "2026-01-02T20:17:28.090Z",
+        "name": "Crestal Network",
+        "platform": "sherlock",
+        "updated_at": "2026-01-02T21:30:03.141Z"
+    }
+
+    result = agent_main(task)
+    print(json.dumps(result, indent=2))

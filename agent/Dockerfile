@@ -1,6 +1,12 @@
 FROM python:3.12-slim
 
-WORKDIR /app
+WORKDIR /agent
+
+# Install system dependencies (git is critical for cloning repos)
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy agent files
 COPY . .
@@ -11,5 +17,7 @@ RUN chmod +x entrypoint.sh
 # Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+
+
 # Set entrypoint
-ENTRYPOINT ["/app/entrypoint.sh"]
+ENTRYPOINT ["/agent/entrypoint.sh"]

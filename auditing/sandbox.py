@@ -53,7 +53,7 @@ class SandboxRunner:
 
     IMAGE_NAME        = "my-test-agent:latest"
     CLONE_TIMEOUT_S   = 60
-    SANDBOX_TIMEOUT_S = int(os.getenv("SANDBOX_TIMEOUT", "100"))
+    SANDBOX_TIMEOUT_S = int(os.getenv("SANDBOX_TIMEOUT", "100000"))
     MAX_CONCURRENT    = int(os.getenv("MAX_CONCURRENT_SANDBOXES", "8"))
 
     def __init__(self):
@@ -79,6 +79,27 @@ class SandboxRunner:
     repo_urls: list[Optional[str]],
     challenge: Challenge,
 ) -> list[Optional[AuditReport]]:
+        # Debug: Print challenge object details
+        _step("DEBUG: Challenge object received")
+        _info(f"Challenge type: {type(challenge)}")
+        _info(f"Challenge name: {getattr(challenge, 'name', 'NOT FOUND')}")
+        _info(f"Challenge project_id: {getattr(challenge, 'project_id', 'NOT FOUND')}")
+        _info(f"Challenge id: {getattr(challenge, 'id', 'NOT FOUND')}")
+        _info(f"Challenge _id: {getattr(challenge, '_id', 'NOT FOUND')}")
+        
+        # Try to access the id field safely
+        try:
+            challenge_id = challenge.id
+            _info(f"challenge.id successfully accessed: {challenge_id}")
+        except AttributeError as e:
+            _err(f"Error accessing challenge.id: {e}")
+            try:
+                challenge_id = challenge._id
+                _info(f"challenge._id successfully accessed: {challenge_id}")
+            except AttributeError as e2:
+                _err(f"Error accessing challenge._id: {e2}")
+                challenge_id = "UNKNOWN"
+        
         if self._semaphore is None:
             self._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT)
 
@@ -136,8 +157,7 @@ class SandboxRunner:
 
         return full_results
 
-    # ── sync internals (called from thread pool) ──────────────────────────────
-
+   
     def _run_sync(
         self,
         idx: int,
@@ -203,12 +223,12 @@ class SandboxRunner:
             # step 5 ── read report from stdout
             print(f"\n{tag} ── Step 5/5: read report from container stdout")
             report = self._extract_report(tag, container, challenge)
-
+            print(report)
             # always destroy
             self._cleanup(tag, container)
             return report
 
-    # ── helpers ───────────────────────────────────────────────────────────────
+    
 
     def _clone_repo(self, tag: str, repo_url: str, dest: Path) -> bool:
         _info(f"{tag} git clone --depth 1  {repo_url}")
@@ -293,29 +313,40 @@ class SandboxRunner:
         challenge_dir: Path,
         challenge: Challenge,
     ) -> "docker.models.containers.Container":
+        # Get challenge_id safely
+        try:
+            challenge_id = challenge.id
+        except AttributeError:
+            try:
+                challenge_id = challenge._id
+            except AttributeError:
+                challenge_id = "UNKNOWN"
+        
+        _dim(f"Using challenge_id: {challenge_id}")
+        
         env = {
-            "CHALLENGE_ID":   challenge.id,
+            "CHALLENGE_ID":   challenge_id,
             "PROJECT_ID":     challenge.project_id,
             "CHALLENGE_NAME": challenge.name,
             "PLATFORM":       challenge.platform,
             "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", ""),
         }
         _dim(f"  env  : {list(env.keys())}")
-        _dim(f"  vol  : {agent_dir} → /agent (ro)")
+        _dim(f"  vol  : {agent_dir} → /miner_agent (ro)")
         _dim(f"  vol  : {challenge_dir} → /challenge (ro)")
 
         return self.client.containers.run(
             image=self.IMAGE_NAME,
             detach=True,
             volumes={
-                str(agent_dir):     {"bind": "/agent",     "mode": "ro"},
+                str(agent_dir):     {"bind": "/miner_agent", "mode": "ro"},
                 str(challenge_dir): {"bind": "/challenge", "mode": "ro"},
             },
             tmpfs={
                 "/tmp": "size=128m,mode=1777",
             },
             environment=env,
-            network_mode="none",
+            network="bridge",
             read_only=True,
             cap_drop=["ALL"],
             security_opt=["no-new-privileges"],

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 
 class Codebase(BaseModel):
@@ -25,12 +25,29 @@ class GroundTruthFinding(BaseModel):
     title: str
     description: str
     vulnerability_type: str
-    severity: str                       
-    confidence: float                    
-    file: str                            
+    severity: str
+    confidence: float
+    file: str
     location: str
     reported_by_model: str
-    status: str                          
+    status: str
+
+    @field_validator(
+        "title",
+        "description",
+        "vulnerability_type",
+        "severity",
+        "file",
+        "location",
+        "reported_by_model",
+        "status",
+        mode="before"
+    )
+    @classmethod
+    def fix_strings(cls, v):
+        if isinstance(v, list):
+            return " ".join(map(str, v))
+        return v                    
 
 class ChallengeReport(BaseModel):
     id: str = Field(alias="_id")
@@ -45,12 +62,27 @@ class ChallengeReport(BaseModel):
 
 
 class MinerFinding(BaseModel):
-    file: str                            
-    severity: str                        
+    file: str
+    severity: str
     vulnerability_type: str
     title: str
     description: str
     location: Optional[str] = None
+
+    @field_validator(
+        "file",
+        "severity",
+        "vulnerability_type",
+        "title",
+        "description",
+        "location",
+        mode="before"
+    )
+    @classmethod
+    def fix_strings(cls, v):
+        if isinstance(v, list):
+            return " ".join(map(str, v))
+        return v
 
 class AuditReport(BaseModel):
     challenge_id: str
