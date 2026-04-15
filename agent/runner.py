@@ -4,14 +4,35 @@ import traceback
 import importlib.util
 from pathlib import Path
 
-AGENT_PATH = "/agent/agent.py"
+DEFAULT_AGENT_ROOT = "/agent"
+MOUNTED_AGENT_ROOT = "/miner_agent"
 CHALLENGE_DIR = "/challenge"
 
 
+def resolve_agent_path() -> str:
+    configured_root = os.getenv("AGENT_PATH", "").rstrip("/")
+    candidate_roots = [root for root in (configured_root, MOUNTED_AGENT_ROOT, DEFAULT_AGENT_ROOT) if root]
+
+    for root in candidate_roots:
+        agent_file = Path(root) / "agent.py"
+        if agent_file.exists():
+            return str(agent_file)
+
+    return str(Path(DEFAULT_AGENT_ROOT) / "agent.py")
+
+
 def load_agent():
-    spec = importlib.util.spec_from_file_location("agent", AGENT_PATH)
+    miner = Path("/miner_agent/agent.py")
+    # default = Path("/agent/agent.py")
+
+    path = miner 
+
+    print(f"[DEBUG] Using: {path}", flush=True)
+
+    spec = importlib.util.spec_from_file_location("agent", str(path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+
     return module
 
 

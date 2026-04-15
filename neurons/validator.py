@@ -28,6 +28,7 @@ from template.base.validator import BaseValidatorNeuron
 
 # Bittensor Validator Template:
 from template.validator import forward
+from template.validator.forward import sandbox
 
 
 class Validator(BaseValidatorNeuron):
@@ -41,6 +42,9 @@ class Validator(BaseValidatorNeuron):
 
     def __init__(self, config=None):
         super(Validator, self).__init__(config=config)
+
+        bt.logging.info("Building sandbox image")
+        sandbox.build_image()
 
         bt.logging.info("load_state()")
         self.load_state()

@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 import os
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -18,7 +19,7 @@ import docker
 import httpx
 from pydantic import ValidationError
 
-from auditing.models import AuditReport, Challenge, Codebase
+from auditing.models import AuditReport, Challenge
 
 
 # ── terminal colours ──────────────────────────────────────────────────────────
@@ -38,6 +39,41 @@ def _dim(m):  print(f"{_D}      {m}{_R}")
 def _step(m): print(f"\n{_B}{_C}{'─'*60}{_R}\n{_B}  {m}{_R}")
 
 
+def _extract_json_blob(text: str) -> str:
+    decoder = json.JSONDecoder()
+    candidates: list[tuple[int, str]] = []
+
+    for match in re.finditer(r"[\{\[]", text):
+        start = match.start()
+        try:
+            parsed, _ = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            continue
+
+        if isinstance(parsed, list):
+            parsed = {"findings": parsed}
+        if isinstance(parsed, dict):
+            candidates.append((start, json.dumps(parsed)))
+
+    if not candidates:
+        return text
+
+    for _, candidate in reversed(candidates):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and (
+            "challenge_id" in parsed
+            or "project_id" in parsed
+            or "findings" in parsed
+            or "status" in parsed
+        ):
+            return candidate
+
+    return candidates[-1][1]
+
+
 class SandboxRunner:
     """
     Runs one Docker container per miner on the VALIDATOR machine.
@@ -55,6 +91,7 @@ class SandboxRunner:
     CLONE_TIMEOUT_S   = 60
     SANDBOX_TIMEOUT_S = int(os.getenv("SANDBOX_TIMEOUT", "100000"))
     MAX_CONCURRENT    = int(os.getenv("MAX_CONCURRENT_SANDBOXES", "8"))
+    SANDBOX_NETWORK   = os.getenv("SANDBOX_NETWORK", "none")
 
     def __init__(self):
         self.client = docker.from_env()
@@ -63,6 +100,7 @@ class SandboxRunner:
         _dim(f"image          : {self.IMAGE_NAME}")
         _dim(f"timeout        : {self.SANDBOX_TIMEOUT_S}s")
         _dim(f"max concurrent : {self.MAX_CONCURRENT}")
+        _dim(f"network        : {self.SANDBOX_NETWORK}")
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -150,7 +188,7 @@ class SandboxRunner:
         _info(f"Skipped   : {skipped}")
         _info(f"Wall time : {elapsed:.1f}s")
 
-        # Pad results with None for skipped miners to maintain original order
+        
         full_results: list[Optional[AuditReport]] = [None] * total
         for (idx, _), res in zip(valid_miners, results):
             full_results[idx] = res
@@ -332,7 +370,7 @@ class SandboxRunner:
             "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", ""),
         }
         _dim(f"  env  : {list(env.keys())}")
-        _dim(f"  vol  : {agent_dir} → /miner_agent (ro)")
+        _dim(f"  vol  : {agent_dir} → /agent (ro)")
         _dim(f"  vol  : {challenge_dir} → /challenge (ro)")
 
         return self.client.containers.run(
@@ -346,7 +384,7 @@ class SandboxRunner:
                 "/tmp": "size=128m,mode=1777",
             },
             environment=env,
-            network="bridge",
+            network=self.SANDBOX_NETWORK,
             read_only=True,
             cap_drop=["ALL"],
             security_opt=["no-new-privileges"],
@@ -382,12 +420,7 @@ class SandboxRunner:
                     pass
                 return None
 
-            # Find the start of the JSON blob (skip any non-JSON lines)
-            raw = stdout
-            for line in stdout.splitlines():
-                if line.strip().startswith("{"):
-                    raw = stdout[stdout.index(line):]
-                    break
+            raw = _extract_json_blob(stdout)
 
             _ok(f"{tag} Report received from stdout")
             _dim(f"{tag} JSON size: {len(raw)} chars")

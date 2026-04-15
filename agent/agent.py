@@ -73,6 +73,43 @@ class GeminiClient:
 # 2-Pass analyser
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _parse_json(raw: str) -> Dict[str, Any]:
+    if not raw:
+        return {}
+
+    text = raw.strip()
+    if not text:
+        return {}
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", text, re.DOTALL)
+    if fenced_match:
+        try:
+            return json.loads(fenced_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    start_positions = [idx for idx in (text.find("{"), text.find("[")) if idx != -1]
+    if not start_positions:
+        logger.warning("Model response did not contain JSON")
+        return {}
+
+    decoder = json.JSONDecoder()
+    for start in sorted(start_positions):
+        try:
+            parsed, _ = decoder.raw_decode(text[start:])
+            return parsed if isinstance(parsed, dict) else {"findings": parsed}
+        except json.JSONDecodeError:
+            continue
+
+    logger.warning("Failed to parse model response as JSON")
+    return {}
+
+
 class TwoPassAnalyser:
 
     def __init__(self, gemini: GeminiClient):

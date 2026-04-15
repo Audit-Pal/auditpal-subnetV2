@@ -11,16 +11,17 @@ echo "[entrypoint] Files in /miner_agent:" >&2
 ls -la /miner_agent/ 2>/dev/null || echo "[entrypoint] /miner_agent not found" >&2
 
 # Check for agent.py in both locations
-if [ -f "/agent/agent.py" ]; then
-  AGENT_PATH="/agent"
-elif [ -f "/miner_agent/agent.py" ]; then
+if [ -f "/miner_agent/agent.py" ]; then
   AGENT_PATH="/miner_agent"
+elif [ -f "/agent/agent.py" ]; then
+  AGENT_PATH="/agent"
 else
   echo '{"status":"error","error":"agent.py not found in /agent or /miner_agent"}'
   exit 1
 fi
 
 echo "[entrypoint] Using agent from: $AGENT_PATH" >&2
+export AGENT_PATH
 
 # Check if miner has their own runner script
 if [ -f "$AGENT_PATH/agent_runner.py" ]; then
