@@ -9,7 +9,6 @@ from functools import partial
 from starlette.types import Send
 
 import bittensor as bt
-from transformers import GPT2Tokenizer
 from typing import List, Dict, Tuple, Union, Callable, Awaitable
 
 from protocol import StreamPrompting

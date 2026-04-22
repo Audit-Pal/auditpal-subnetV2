@@ -1,3 +1,4 @@
+# ── terminal colours ──────────────────────────────────────────────────────────
 # The MIT License (MIT)
 # Copyright © 2023 Yuma Rao
 # Copyright © 2025 AuditPal
@@ -22,7 +23,6 @@ from pydantic import ValidationError
 from auditing.models import AuditReport, Challenge
 
 
-# ── terminal colours ──────────────────────────────────────────────────────────
 _R = "\033[0m"
 _B = "\033[1m"
 _G = "\033[92m"
@@ -113,35 +113,29 @@ class SandboxRunner:
         _ok(f"Image built in {time.time() - t0:.1f}s")
 
     async def run_all(
-    self,
-    repo_urls: list[Optional[str]],
-    challenge: Challenge,
-) -> list[Optional[AuditReport]]:
-        # Debug: Print challenge object details
+        self,
+        repo_urls: list[Optional[str]],
+        challenge: Challenge,
+    ) -> list[Optional[AuditReport]]:
         _step("DEBUG: Challenge object received")
-        _info(f"Challenge type: {type(challenge)}")
-        _info(f"Challenge name: {getattr(challenge, 'name', 'NOT FOUND')}")
-        _info(f"Challenge project_id: {getattr(challenge, 'project_id', 'NOT FOUND')}")
-        _info(f"Challenge id: {getattr(challenge, 'id', 'NOT FOUND')}")
-        _info(f"Challenge _id: {getattr(challenge, '_id', 'NOT FOUND')}")
-        
-        # Try to access the id field safely
+        _info(f"Challenge type       : {type(challenge)}")
+        _info(f"Challenge name       : {getattr(challenge, 'name', 'NOT FOUND')}")
+        _info(f"Challenge project_id : {getattr(challenge, 'project_id', 'NOT FOUND')}")
+
         try:
             challenge_id = challenge.id
-            _info(f"challenge.id successfully accessed: {challenge_id}")
-        except AttributeError as e:
-            _err(f"Error accessing challenge.id: {e}")
+            _info(f"challenge.id         : {challenge_id}")
+        except AttributeError:
             try:
                 challenge_id = challenge._id
-                _info(f"challenge._id successfully accessed: {challenge_id}")
-            except AttributeError as e2:
-                _err(f"Error accessing challenge._id: {e2}")
+                _info(f"challenge._id        : {challenge_id}")
+            except AttributeError:
                 challenge_id = "UNKNOWN"
-        
+                _warn("Could not read challenge id")
+
         if self._semaphore is None:
             self._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT)
 
-        # Only miners with actual repo URLs
         valid_miners = [(i, url) for i, url in enumerate(repo_urls) if url]
 
         total     = len(repo_urls)
@@ -188,14 +182,12 @@ class SandboxRunner:
         _info(f"Skipped   : {skipped}")
         _info(f"Wall time : {elapsed:.1f}s")
 
-        
         full_results: list[Optional[AuditReport]] = [None] * total
         for (idx, _), res in zip(valid_miners, results):
             full_results[idx] = res
 
         return full_results
 
-   
     def _run_sync(
         self,
         idx: int,
@@ -218,7 +210,6 @@ class SandboxRunner:
 
             # step 2 ── challenge files
             print(f"\n{tag} ── Step 2/5: download challenge files")
-            
             if not self._prepare_challenge(tag, challenge, challenge_dir):
                 return None
 
@@ -227,13 +218,8 @@ class SandboxRunner:
             try:
                 container = self._run_container(agent_dir, challenge_dir, challenge)
                 _ok(f"{tag} Container started: {container.short_id}")
-                _dim(f"{tag} Flags: read-only FS | 2 GB RAM | 1 vCPU")
-                exec_result = container.exec_run("ls -la /agent")
-                print(exec_result.output.decode())
-
-                # List /challenge files
-                exec_result = container.exec_run("ls -la /challenge")
-                print(exec_result.output.decode())  
+                _dim(f"{tag} Flags: read-only FS | 2 GB RAM | 1 vCPU | network=none")
+                # ── REMOVED: exec_run ls calls that leaked to stdout ──
             except Exception as exc:
                 _err(f"{tag} Failed to start container: {exc}")
                 return None
@@ -244,7 +230,6 @@ class SandboxRunner:
             try:
                 result    = container.wait(timeout=self.SANDBOX_TIMEOUT_S)
                 exit_code = result.get("StatusCode", -1)
-                
                 elapsed   = time.time() - t0
                 ((_ok if exit_code == 0 else _warn))(
                     f"{tag} Container exited {exit_code} in {elapsed:.1f}s"
@@ -261,12 +246,8 @@ class SandboxRunner:
             # step 5 ── read report from stdout
             print(f"\n{tag} ── Step 5/5: read report from container stdout")
             report = self._extract_report(tag, container, challenge)
-            print(report)
-            # always destroy
             self._cleanup(tag, container)
             return report
-
-    
 
     def _clone_repo(self, tag: str, repo_url: str, dest: Path) -> bool:
         _info(f"{tag} git clone --depth 1  {repo_url}")
@@ -351,7 +332,6 @@ class SandboxRunner:
         challenge_dir: Path,
         challenge: Challenge,
     ) -> "docker.models.containers.Container":
-        # Get challenge_id safely
         try:
             challenge_id = challenge.id
         except AttributeError:
@@ -359,9 +339,9 @@ class SandboxRunner:
                 challenge_id = challenge._id
             except AttributeError:
                 challenge_id = "UNKNOWN"
-        
+
         _dim(f"Using challenge_id: {challenge_id}")
-        
+
         env = {
             "CHALLENGE_ID":   challenge_id,
             "PROJECT_ID":     challenge.project_id,
@@ -370,7 +350,7 @@ class SandboxRunner:
             "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", ""),
         }
         _dim(f"  env  : {list(env.keys())}")
-        _dim(f"  vol  : {agent_dir} → /agent (ro)")
+        _dim(f"  vol  : {agent_dir} → /miner_agent (ro)")
         _dim(f"  vol  : {challenge_dir} → /challenge (ro)")
 
         return self.client.containers.run(
@@ -378,7 +358,7 @@ class SandboxRunner:
             detach=True,
             volumes={
                 str(agent_dir):     {"bind": "/miner_agent", "mode": "ro"},
-                str(challenge_dir): {"bind": "/challenge", "mode": "ro"},
+                str(challenge_dir): {"bind": "/challenge",   "mode": "ro"},
             },
             tmpfs={
                 "/tmp": "size=128m,mode=1777",
@@ -401,23 +381,23 @@ class SandboxRunner:
     ) -> Optional[AuditReport]:
         raw = ""
         try:
-            # Read JSON report from stdout instead of /output/report.json
             stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace").strip()
+            stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace").strip()
+
+            # Always print stderr for debugging (it's safe — goes to validator stdout)
+            if stderr:
+                print(f"\n{_D}  ╔── container stderr ──╗{_R}")
+                for line in stderr.splitlines():
+                    _dim(f"{tag}   {line}")
+                print(f"{_D}  ╚──────────────────────╝{_R}\n")
+
             print(f"\n{_D}  ╔── container stdout ──╗{_R}")
             for line in stdout.splitlines():
                 _dim(f"{tag}   {line}")
             print(f"{_D}  ╚──────────────────────╝{_R}\n")
+
             if not stdout:
                 _err(f"{tag} Container produced no stdout — agent crashed or timed out")
-                try:
-                    stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace").strip()
-                    if stderr:
-                        print(f"\n{_D}  ╔── container stderr ──╗{_R}")
-                        for line in stderr.splitlines():
-                            _dim(f"{tag}   {line}")
-                        print(f"{_D}  ╚──────────────────────╝{_R}")
-                except Exception:
-                    pass
                 return None
 
             raw = _extract_json_blob(stdout)
@@ -486,4 +466,3 @@ class SandboxRunner:
             _ok(f"{tag} Container {container.short_id} destroyed")
         except Exception as exc:
             _warn(f"{tag} Could not remove container: {exc}")
-        

@@ -1,108 +1,98 @@
+#!/usr/bin/env python3
 import json
 import os
+import sys
 import traceback
-import importlib.util
 from pathlib import Path
+import importlib.util
 
-DEFAULT_AGENT_ROOT = "/agent"
-MOUNTED_AGENT_ROOT = "/miner_agent"
-CHALLENGE_DIR = "/challenge"
+AGENT_PATH = Path(os.getenv("AGENT_PATH", "/agent")) / "agent.py"
+CHALLENGE_DIR = Path("/challenge")
 
 
-def resolve_agent_path() -> str:
-    configured_root = os.getenv("AGENT_PATH", "").rstrip("/")
-    candidate_roots = [root for root in (configured_root, MOUNTED_AGENT_ROOT, DEFAULT_AGENT_ROOT) if root]
-
-    for root in candidate_roots:
-        agent_file = Path(root) / "agent.py"
-        if agent_file.exists():
-            return str(agent_file)
-
-    return str(Path(DEFAULT_AGENT_ROOT) / "agent.py")
+def eprint(*args, **kwargs):
+    """Print to stderr only (never pollute stdout JSON)."""
+    print(*args, file=sys.stderr, flush=True, **kwargs)
 
 
 def load_agent():
-    miner = Path("/miner_agent/agent.py")
-    # default = Path("/agent/agent.py")
+    if not AGENT_PATH.exists():
+        raise FileNotFoundError(f"agent.py not found at {AGENT_PATH}")
 
-    path = miner 
-
-    print(f"[DEBUG] Using: {path}", flush=True)
-
-    spec = importlib.util.spec_from_file_location("agent", str(path))
+    spec = importlib.util.spec_from_file_location("agent", str(AGENT_PATH))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+
+    if not hasattr(module, "agent_main"):
+        raise Exception("agent_main(task) not found in agent.py")
 
     return module
 
 
 def load_challenge():
-    """Load actual challenge files from /challenge directory prepared by sandbox"""
     contracts = {}
-    challenge_dir = Path(CHALLENGE_DIR)
-    
-    # Debug: Print all environment variables
-    print(f"Environment variables:", flush=True)
-    print(f"CHALLENGE_ID: {os.getenv('CHALLENGE_ID', 'NOT SET')}", flush=True)
-    print(f"PROJECT_ID: {os.getenv('PROJECT_ID', 'NOT SET')}", flush=True)
-    print(f"CHALLENGE_NAME: {os.getenv('CHALLENGE_NAME', 'NOT SET')}", flush=True)
-    print(f"PLATFORM: {os.getenv('PLATFORM', 'NOT SET')}", flush=True)
-    
-    if not challenge_dir.exists():
-        print(f"Challenge directory {CHALLENGE_DIR} not found", flush=True)
+
+    eprint(f"[runner] CHALLENGE_ID : {os.getenv('CHALLENGE_ID')}")
+    eprint(f"[runner] PROJECT_ID   : {os.getenv('PROJECT_ID')}")
+    eprint(f"[runner] NAME         : {os.getenv('CHALLENGE_NAME')}")
+
+    if not CHALLENGE_DIR.exists():
+        eprint("[runner] /challenge directory not found")
         return {
-            "challenge_id": os.getenv("CHALLENGE_ID", "error"),
-            "project_id":   os.getenv("PROJECT_ID",   "error"),
-            "contracts":    {},
-        }
-    
-    # Read all .sol files from all codebase subdirectories
-    for codebase_dir in challenge_dir.iterdir():
-        if codebase_dir.is_dir():
-            for sol_file in codebase_dir.glob("*.sol"):
-                try:
-                    contracts[sol_file.name] = sol_file.read_text(encoding="utf-8", errors="ignore")
-                    print(f"Loaded contract: {sol_file.name} from {codebase_dir.name}", flush=True)
-                except Exception as e:
-                    print(f"Failed to read {sol_file}: {e}", flush=True)
-    
-    if not contracts:
-        print(f"No .sol files found in {CHALLENGE_DIR}", flush=True)
-        return {
-            "challenge_id": os.getenv("CHALLENGE_ID", "error"),
-            "project_id":   os.getenv("PROJECT_ID",   "error"),
-            "contracts":    {},
+            "challenge_id": os.getenv("CHALLENGE_ID", "unknown"),
+            "project_id": os.getenv("PROJECT_ID", "unknown"),
+            "contracts": {},
         }
 
-    print(f"Loaded {len(contracts)} contract(s) from challenge", flush=True)
+    for codebase_dir in CHALLENGE_DIR.iterdir():
+        if not codebase_dir.is_dir():
+            continue
+
+        for sol_file in codebase_dir.glob("*.sol"):
+            try:
+                contracts[sol_file.name] = sol_file.read_text(
+                    encoding="utf-8", errors="ignore"
+                )
+                eprint(f"[runner] Loaded {sol_file.name}")
+            except Exception as e:
+                eprint(f"[runner] Failed to read {sol_file}: {e}")
+
+    eprint(f"[runner] Total contracts: {len(contracts)}")
+
     return {
         "challenge_id": os.getenv("CHALLENGE_ID", "unknown"),
-        "project_id":   os.getenv("PROJECT_ID",   "unknown"),
-        "contracts":    contracts,
+        "project_id": os.getenv("PROJECT_ID", "unknown"),
+        "contracts": contracts,
     }
 
 
 def main():
     try:
+        eprint("[runner] Starting...")
+
         agent = load_agent()
-
-        if not hasattr(agent, "agent_main"):
-            raise Exception("agent_main(task) not found in agent.py")
-
         task = load_challenge()
 
+        eprint("[runner] Running agent_main()")
         result = agent.agent_main(task)
 
-        # ✅ MUST BE PURE JSON (no logs)
-        print(json.dumps(result))
+        eprint("[runner] Finished — writing JSON")
+
+        # ✅ ONLY stdout output
+        print(json.dumps(result), flush=True)
 
     except Exception as e:
+        eprint(f"[runner] FATAL: {e}")
+        eprint(traceback.format_exc())
+
+        # Still return valid JSON so validator can handle it
         print(json.dumps({
             "status": "error",
             "error": str(e),
-            "trace": traceback.format_exc()
-        }))
+            "trace": traceback.format_exc(),
+        }), flush=True)
 
 
 if __name__ == "__main__":
     main()
+

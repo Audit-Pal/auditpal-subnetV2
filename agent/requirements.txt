@@ -1,3 +1,26 @@
+# ── Static Analysis ────────────────────────────────────────────────────────
 slither-analyzer
 crytic-compile
-google-genai>=0.8.0 
+
+# ── LLM Providers ─────────────────────────────────────────────────────────
+google-generativeai>=0.7.0       # Gemini (gemini-2.5-flash etc.)
+openai>=1.30.0                     # OpenAI (gpt-4o, o1 etc.)
+anthropic>=0.25.0                  # Claude (claude-3-5-sonnet etc.)
+ollama>=0.2.0                      # Ollama local models
+
+# ── LLM Orchestration ─────────────────────────────────────────────────────
+langchain-core>=0.2.0              # Shared abstractions if orchestrating agents
+tiktoken>=0.7.0                    # Token counting (OpenAI + others)
+
+# ── HTTP / Async ───────────────────────────────────────────────────────────
+requests>=2.32.0                   # Ollama REST + general HTTP
+httpx>=0.27.0                      # Async HTTP (used internally by openai/anthropic SDKs)
+aiohttp>=3.9.0                     # If you need async agent pipelines
+
+# ── Data / Parsing ─────────────────────────────────────────────────────────
+pydantic>=2.7.0                    # Schema validation for findings/reports
+python-dotenv>=1.0.0               # Load .env for API keys locally
+
+# ── Utilities ──────────────────────────────────────────────────────────────
+tenacity>=8.3.0                    # Retry logic (replace your manual retry loops)
+tqdm>=4.66.0                       # Progress bars for multi-contract analysis
