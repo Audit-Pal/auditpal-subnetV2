@@ -127,6 +127,9 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.env.miner
+.env.validator
+
 
 # Spyder project settings
 .spyderproject

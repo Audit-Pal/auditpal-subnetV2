@@ -58,20 +58,17 @@ def _extract_json_blob(text: str) -> str:
     if not candidates:
         return text
 
-    for _, candidate in reversed(candidates):
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict) and (
-            "challenge_id" in parsed
-            or "project_id" in parsed
-            or "findings" in parsed
-            or "status" in parsed
-        ):
-            return candidate
+    _REQUIRED = {"challenge_id", "project_id", "findings"}
 
-    return candidates[-1][1]
+    def _score(c: str) -> int:
+        try:
+            p = json.loads(c)
+            return sum(1 for k in _REQUIRED if k in p)
+        except Exception:
+            return 0
+
+    best = max(candidates, key=lambda item: (_score(item[1]), -item[0]))
+    return best[1]
 
 
 class SandboxRunner:
@@ -81,7 +78,7 @@ class SandboxRunner:
     Lifecycle per miner:
       1. git clone miner repo on host  (network OK — before container starts)
       2. download challenge tarball     (network OK — before container starts)
-      3. docker run                     (network=none, read-only, tmpfs /output)
+      3. docker run                     (network=none, read-only, tmpfs /tmp)
       4. wait up to SANDBOX_TIMEOUT_S
       5. read report JSON from container stdout
       6. container.remove(force=True)   (always — even on failure)
@@ -89,9 +86,9 @@ class SandboxRunner:
 
     IMAGE_NAME        = "my-test-agent:latest"
     CLONE_TIMEOUT_S   = 60
-    SANDBOX_TIMEOUT_S = int(os.getenv("SANDBOX_TIMEOUT", "100000"))
+    SANDBOX_TIMEOUT_S = int(os.getenv("SANDBOX_TIMEOUT", "120"))   # bumped 100→120
     MAX_CONCURRENT    = int(os.getenv("MAX_CONCURRENT_SANDBOXES", "8"))
-    SANDBOX_NETWORK   = os.getenv("SANDBOX_NETWORK", "none")
+    SANDBOX_NETWORK   = os.getenv("SANDBOX_NETWORK", "bridge")
 
     def __init__(self):
         self.client = docker.from_env()
@@ -219,7 +216,6 @@ class SandboxRunner:
                 container = self._run_container(agent_dir, challenge_dir, challenge)
                 _ok(f"{tag} Container started: {container.short_id}")
                 _dim(f"{tag} Flags: read-only FS | 2 GB RAM | 1 vCPU | network=none")
-                # ── REMOVED: exec_run ls calls that leaked to stdout ──
             except Exception as exc:
                 _err(f"{tag} Failed to start container: {exc}")
                 return None
@@ -269,10 +265,10 @@ class SandboxRunner:
             _dim(f"{tag} {len(all_files)} files total | {sol_count} .sol | {py_count} .py")
 
             if (dest / "agent.py").exists():
-                _ok(f"{tag} agent.py found at repo root")
+                _ok(f"{tag} agent.py found at repo root ✓")
             else:
                 _warn(f"{tag} agent.py NOT found at repo root!")
-                _dim(f"{tag} Root: {[f.name for f in dest.iterdir()]}")
+                _dim(f"{tag} Root contents: {[f.name for f in dest.iterdir()]}")
 
             return True
 
@@ -348,10 +344,13 @@ class SandboxRunner:
             "CHALLENGE_NAME": challenge.name,
             "PLATFORM":       challenge.platform,
             "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", ""),
+            # ── Fix: tell runner.py where agent.py is mounted ────────────────
+            "AGENT_PATH":     "/miner_agent",
         }
-        _dim(f"  env  : {list(env.keys())}")
-        _dim(f"  vol  : {agent_dir} → /miner_agent (ro)")
-        _dim(f"  vol  : {challenge_dir} → /challenge (ro)")
+
+        _dim(f"  env keys : {list(env.keys())}")
+        _dim(f"  volumes  : {agent_dir} → /miner_agent (ro)")
+        _dim(f"  volumes  : {challenge_dir} → /challenge (ro)")
 
         return self.client.containers.run(
             image=self.IMAGE_NAME,
@@ -384,26 +383,28 @@ class SandboxRunner:
             stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace").strip()
             stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace").strip()
 
-            # Always print stderr for debugging (it's safe — goes to validator stdout)
+            # Always dump stderr — this is all the agent/runner debug output
             if stderr:
                 print(f"\n{_D}  ╔── container stderr ──╗{_R}")
                 for line in stderr.splitlines():
                     _dim(f"{tag}   {line}")
                 print(f"{_D}  ╚──────────────────────╝{_R}\n")
+            else:
+                _warn(f"{tag} Container stderr was empty — agent may have crashed before logging")
 
-            print(f"\n{_D}  ╔── container stdout ──╗{_R}")
+            print(f"\n{_D}  ╔── container stdout (raw) ──╗{_R}")
             for line in stdout.splitlines():
                 _dim(f"{tag}   {line}")
-            print(f"{_D}  ╚──────────────────────╝{_R}\n")
+            print(f"{_D}  ╚────────────────────────────╝{_R}\n")
 
             if not stdout:
-                _err(f"{tag} Container produced no stdout — agent crashed or timed out")
+                _err(f"{tag} Container produced no stdout")
+                _err(f"{tag} Likely causes: agent.py not found, import error, or Gemini API key missing")
                 return None
 
             raw = _extract_json_blob(stdout)
 
-            _ok(f"{tag} Report received from stdout")
-            _dim(f"{tag} JSON size: {len(raw)} chars")
+            _ok(f"{tag} JSON blob extracted ({len(raw)} chars)")
 
             preview = raw[:500] + ("..." if len(raw) > 500 else "")
             print(f"\n{_D}  ╔── report preview ──╗{_R}")
@@ -412,9 +413,14 @@ class SandboxRunner:
             print(f"{_D}  ╚────────────────────╝{_R}\n")
 
             data   = json.loads(raw)
+
+            # ── Warn if runner returned an error report ───────────────────────
+            if "_runner_error" in data:
+                _warn(f"{tag} runner.py reported an error: {data['_runner_error']}")
+
             report = AuditReport.model_validate(data)
 
-            _ok(f"{tag} Schema validation passed")
+            _ok(f"{tag} Schema validation passed ✓")
             _info(f"{tag} challenge_id : {report.challenge_id}")
             _info(f"{tag} project_id   : {report.project_id}")
             _info(f"{tag} findings     : {len(report.findings)}")
@@ -434,15 +440,12 @@ class SandboxRunner:
                 )
 
             print()
-            _info(
-                f"{tag} Breakdown → "
-                + "  ".join(f"{k}={v}" for k, v in sev_counts.items())
-            )
+            _info(f"{tag} Breakdown → " + "  ".join(f"{k}={v}" for k, v in sev_counts.items()))
             return report
 
         except json.JSONDecodeError as exc:
             _err(f"{tag} Invalid JSON in stdout: {exc}")
-            _dim(f"{tag} Raw (first 300 chars): {raw[:300]}")
+            _dim(f"{tag} Raw stdout (first 500 chars): {stdout[:500]}")
 
         except ValidationError as exc:
             _err(f"{tag} Schema validation failed:")
