@@ -1,251 +1,148 @@
+# auditing/scorer.py  — replace score_one() with this
+
 from __future__ import annotations
- 
 import re
 from pathlib import Path
 from typing import Optional
- 
-import bittensor as bt
- 
 from auditing.models import AuditReport, ChallengeReport, GroundTruthFinding, MinerFinding
- 
- 
-# ── tuneable constants ────────────────────────────────────────────────────────
- 
+
 SEVERITY_WEIGHTS: dict[str, float] = {
-    "high":   4.0,
-    "medium": 2.0,
-    "low":    1.0,
-    "info":   0.5,
+    "critical": 5.0,
+    "high":     4.0,
+    "medium":   2.0,
+    "low":      1.0,
+    "info":     0.5,
 }
- 
-FP_PENALTY = 0.02          # deducted per false-positive finding
+
+# How much credit for each matching dimension (must sum ≤ 1.0)
+FILE_WEIGHT     = 0.35   # correct file identified
+TYPE_WEIGHT     = 0.45   # correct vulnerability class
+SEVERITY_WEIGHT = 0.20   # correct severity
+
+# Adjacent severities still get partial credit
+SEVERITY_ADJACENCY: dict[str, set[str]] = {
+    "critical": {"high"},
+    "high":     {"critical", "medium"},
+    "medium":   {"high", "low"},
+    "low":      {"medium", "info"},
+    "info":     {"low"},
+}
+ADJACENT_SEVERITY_CREDIT = 0.5   # 50 % credit for off-by-one severity
+
+FP_PENALTY = 0.02
 MIN_SCORE  = 0.0
 MAX_SCORE  = 1.0
- 
- 
-# ── terminal colours (mirrors sandbox.py) ────────────────────────────────────
- 
-_R = "\033[0m";  _B = "\033[1m";  _G = "\033[92m"
+
+_R = "\033[0m"; _B = "\033[1m"; _G = "\033[92m"
 _Y = "\033[93m"; _E = "\033[91m"; _C = "\033[96m"; _D = "\033[2m"
- 
 def _ok(m):   print(f"{_G}  ✓  {m}{_R}")
 def _info(m): print(f"{_C}  →  {m}{_R}")
 def _warn(m): print(f"{_Y}  ⚠  {m}{_R}")
-def _err(m):  print(f"{_E}  ✗  {m}{_R}")
-def _dim(m):  print(f"{_D}      {m}{_R}")
-def _step(m): print(f"\n{_B}{_C}{'─'*60}{_R}\n{_B}  {m}{_R}")
- 
- 
-# ── normalisation helpers ─────────────────────────────────────────────────────
- 
+
+
 def _norm_file(path: str) -> str:
-    """Return the lowercased basename of a file path."""
     return Path(path).name.lower()
- 
- 
+
 def _norm_type(vuln_type: str) -> str:
-    """Lowercase + remove punctuation/whitespace for fuzzy type matching."""
     return re.sub(r"[\W_]+", "", vuln_type.lower())
- 
- 
+
 def _severity_weight(severity: str) -> float:
     return SEVERITY_WEIGHTS.get(severity.lower(), 0.5)
- 
- 
-# ── key builders ─────────────────────────────────────────────────────────────
- 
-def _gt_key(finding: GroundTruthFinding) -> tuple[str, str, str]:
-    """Canonical lookup key for a ground-truth finding."""
+
+
+def _finding_match_score(mf: MinerFinding, gt: GroundTruthFinding) -> float:
+    """
+    Returns a match score in [0.0, 1.0] between a miner finding and a GT finding.
+    Exact match = 1.0. Partial credit for file + type match with wrong severity.
+    Zero if file or type don't match at all.
+    """
+    mf_file = _norm_file(mf.file)
+    gt_file = _norm_file(gt.file)
+    mf_type = _norm_type(mf.vulnerability_type)
+    gt_type = _norm_type(gt.vulnerability_type)
+    mf_sev  = mf.severity.lower()
+    gt_sev  = gt.severity.lower()
+
+    # ── File match ───────────────────────────────────────────────────────────
+    if mf_file == gt_file:
+        file_score = 1.0
+    else:
+        return 0.0   # wrong file → no credit at all
+
+    # ── Vulnerability type match (substring counts as partial) ───────────────
+    if mf_type == gt_type:
+        type_score = 1.0
+    elif gt_type in mf_type or mf_type in gt_type:
+        # e.g. miner says "reentrancyandoraclemanipulation", GT has "reentrancy"
+        type_score = 0.6
+    else:
+        return 0.0   # completely wrong type → no credit
+
+    # ── Severity match ───────────────────────────────────────────────────────
+    if mf_sev == gt_sev:
+        sev_score = 1.0
+    elif mf_sev in SEVERITY_ADJACENCY.get(gt_sev, set()):
+        sev_score = ADJACENT_SEVERITY_CREDIT
+    else:
+        sev_score = 0.0
+
     return (
-        _norm_file(finding.file),
-        _norm_type(finding.vulnerability_type),
-        finding.severity.lower(),
+        file_score * FILE_WEIGHT
+        + type_score * TYPE_WEIGHT
+        + sev_score * SEVERITY_WEIGHT
     )
- 
- 
-def _miner_key(finding: MinerFinding) -> tuple[str, str, str]:
-    """Same key shape for a miner finding."""
-    return (
-        _norm_file(finding.file),
-        _norm_type(finding.vulnerability_type),
-        finding.severity.lower(),
-    )
- 
- 
-# ── per-miner scoring ─────────────────────────────────────────────────────────
- 
+
+
 def score_one(
     report: Optional[AuditReport],
     ground_truth: ChallengeReport,
 ) -> float:
-    """
-    Score a single miner report against the ground-truth ChallengeReport.
- 
-    Returns a float in [0.0, 1.0].
-    """
-    # No report at all → zero
     if report is None:
         return 0.0
- 
-    # Build a lookup: key → list[GroundTruthFinding]
-    # (multiple GT findings can share the same key — each is worth its own weight)
-    gt_by_key: dict[tuple, list[GroundTruthFinding]] = {}
-    for gt in ground_truth.findings:
-        k = _gt_key(gt)
-        gt_by_key.setdefault(k, []).append(gt)
- 
-    # Total achievable weighted score
+
     total_weight = sum(_severity_weight(gt.severity) for gt in ground_truth.findings)
     if total_weight == 0.0:
         return 0.0
- 
-    # Track which GT findings have already been credited (avoid double-counting)
-    credited_ids: set[str] = set()
+
+    # For each GT finding, track the best partial match score given by the miner
+    gt_findings = list(ground_truth.findings)
+    gt_credited  = [False] * len(gt_findings)   # prevent double-crediting same GT
+    mf_matched   = [False] * len(report.findings)
+
     weighted_hits = 0.0
     false_positives = 0
- 
-    for mf in report.findings:
-        key = _miner_key(mf)
-        candidates = gt_by_key.get(key, [])
- 
-        # Credit the first un-credited GT match
-        matched = False
-        for gt in candidates:
-            if gt.id not in credited_ids:
-                credited_ids.add(gt.id)
-                weighted_hits += _severity_weight(gt.severity)
-                matched = True
-                break
- 
-        if not matched:
+
+    for mf_idx, mf in enumerate(report.findings):
+        best_score = 0.0
+        best_gt_idx = -1
+
+        for gt_idx, gt in enumerate(gt_findings):
+            if gt_credited[gt_idx]:
+                continue
+            match = _finding_match_score(mf, gt)
+            if match > best_score:
+                best_score   = match
+                best_gt_idx  = gt_idx
+
+        if best_score > 0.0 and best_gt_idx >= 0:
+            gt_credited[best_gt_idx] = True
+            mf_matched[mf_idx]       = True
+            gt = gt_findings[best_gt_idx]
+            # Credit is proportional to how well it matched × GT severity weight
+            weighted_hits += best_score * _severity_weight(gt.severity)
+            _info(
+                f"  MATCH  [{mf.severity.upper():8}] {mf.file} | {mf.vulnerability_type}"
+                f"  →  GT [{gt.severity.upper():8}] {gt.file} | {gt.vulnerability_type}"
+                f"  match={best_score:.2f}  weight={_severity_weight(gt.severity):.1f}"
+            )
+        else:
             false_positives += 1
- 
-    # Raw score before penalty
-    raw = weighted_hits / total_weight
- 
-    # False-positive penalty
+
+    raw     = weighted_hits / total_weight
     penalty = false_positives * FP_PENALTY
     final   = max(MIN_SCORE, min(MAX_SCORE, raw - penalty))
- 
+
+    _info(f"  weighted_hits={weighted_hits:.2f}  total={total_weight:.2f}"
+          f"  raw={raw:.3f}  fp={false_positives}  penalty={penalty:.3f}"
+          f"  final={final:.3f}")
     return final
- 
- 
-# ── batch scoring (one call per validation round) ────────────────────────────
- 
-def score_miners(
-    reports: list[Optional[AuditReport]],
-    ground_truth: ChallengeReport,
-) -> list[float]:
-    """
-    Score every miner in a validation round.
- 
-    Parameters
-    ----------
-    reports      : one AuditReport (or None) per miner, in miner-index order.
-    ground_truth : the ChallengeReport fetched from the challenge API.
- 
-    Returns
-    -------
-    List of floats in [0.0, 1.0], same length as `reports`.
-    """
-    _step("Scoring miners")
-    _info(f"Ground-truth findings : {len(ground_truth.findings)}")
-    _info(f"Miners to score       : {len(reports)}")
- 
-    # Pre-compute total achievable weight once for the log line
-    total_weight = sum(_severity_weight(gt.severity) for gt in ground_truth.findings)
-    _info(f"Total achievable weight: {total_weight:.1f}")
- 
-    sev_map = {"high": _E, "medium": _Y, "low": _C, "info": _D}
-    print()
-    _dim("Ground-truth breakdown:")
-    from collections import Counter
-    sev_counts = Counter(gt.severity.lower() for gt in ground_truth.findings)
-    for sev, cnt in sorted(sev_counts.items()):
-        colour = sev_map.get(sev, _D)
-        _dim(f"  {colour}[{sev.upper():6}]{_R}  {cnt} finding(s)")
- 
-    scores: list[float] = []
-    for idx, report in enumerate(reports):
-        score = score_one(report, ground_truth)
-        scores.append(score)
- 
-        if report is None:
-            _warn(f"  miner {idx:>3}  →  no report  →  score = 0.000")
-        else:
-            findings_n = len(report.findings)
-            bar_filled = int(score * 20)
-            bar = "█" * bar_filled + "░" * (20 - bar_filled)
-            colour = _G if score >= 0.7 else (_Y if score >= 0.3 else _E)
-            print(
-                f"  miner {idx:>3}  "
-                f"findings={findings_n:>3}  "
-                f"[{colour}{bar}{_R}]  "
-                f"{colour}{score:.3f}{_R}"
-            )
- 
-    print()
-    valid_scores = [s for s, r in zip(scores, reports) if r is not None]
-    if valid_scores:
-        _info(f"Mean score (responded) : {sum(valid_scores)/len(valid_scores):.3f}")
-        _info(f"Max score              : {max(valid_scores):.3f}")
-        _info(f"Min score              : {min(valid_scores):.3f}")
-    _ok(f"Scoring complete — {len(scores)} miners processed")
- 
-    return scores
- 
- 
-# ── debug helper ─────────────────────────────────────────────────────────────
- 
-def explain_score(
-    report: AuditReport,
-    ground_truth: ChallengeReport,
-) -> None:
-    """
-    Pretty-print a per-finding breakdown for a single miner (debugging).
-    """
-    _step("Score explanation")
-    gt_by_key: dict[tuple, list[GroundTruthFinding]] = {}
-    for gt in ground_truth.findings:
-        k = _gt_key(gt)
-        gt_by_key.setdefault(k, []).append(gt)
- 
-    credited_ids: set[str] = set()
-    total_weight = sum(_severity_weight(gt.severity) for gt in ground_truth.findings)
-    weighted_hits = 0.0
-    fp = 0
- 
-    for mf in report.findings:
-        key = _miner_key(mf)
-        candidates = gt_by_key.get(key, [])
-        matched_gt = None
-        for gt in candidates:
-            if gt.id not in credited_ids:
-                credited_ids.add(gt.id)
-                matched_gt = gt
-                weighted_hits += _severity_weight(gt.severity)
-                break
- 
-        if matched_gt:
-            _ok(
-                f"HIT   [{mf.severity.upper():6}]  {mf.file}  "
-                f"| {mf.vulnerability_type}  "
-                f"+{_severity_weight(matched_gt.severity):.1f}"
-            )
-        else:
-            fp += 1
-            _warn(
-                f"FP    [{mf.severity.upper():6}]  {mf.file}  "
-                f"| {mf.vulnerability_type}  "
-                f"-{FP_PENALTY:.3f}"
-            )
- 
-    raw     = weighted_hits / total_weight if total_weight else 0.0
-    penalty = fp * FP_PENALTY
-    final   = max(MIN_SCORE, min(MAX_SCORE, raw - penalty))
- 
-    print()
-    _info(f"Weighted hits : {weighted_hits:.1f} / {total_weight:.1f}")
-    _info(f"Raw score     : {raw:.3f}")
-    _info(f"FP penalty    : -{penalty:.3f}  ({fp} false positive(s))")
-    _ok  (f"Final score   : {final:.3f}")

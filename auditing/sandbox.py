@@ -224,7 +224,7 @@ class SandboxRunner:
             print(f"\n{tag} ── Step 4/5: waiting up to {self.SANDBOX_TIMEOUT_S}s")
             t0 = time.time()
             try:
-                result    = container.wait(timeout=self.SANDBOX_TIMEOUT_S)
+                result    = container.wait()
                 exit_code = result.get("StatusCode", -1)
                 elapsed   = time.time() - t0
                 ((_ok if exit_code == 0 else _warn))(

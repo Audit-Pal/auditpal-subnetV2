@@ -11,7 +11,6 @@ from template.validator.reward import get_rewards
 from template.utils.uids import get_random_uids
 from auditing.challenge_client import ChallengeClient
 from auditing.sandbox import SandboxRunner
-
 challenge_client = ChallengeClient()
 sandbox          = SandboxRunner()
 
@@ -20,7 +19,7 @@ async def forward(self):
     challenge = await challenge_client.fetch_random_challenge()
     ground_truth = await challenge_client.fetch_report(challenge.project_id)
     miner_uids = get_random_uids(self, k=self.config.neuron.sample_size)
-
+  
     responses = await self.dendrite(
         axons=[self.metagraph.axons[uid] for uid in miner_uids],
         synapse=AuditSynapse(
@@ -36,9 +35,10 @@ async def forward(self):
         repo_urls=responses,
         challenge=challenge,
     )
-
-    bt.logging.info(f"Reports: {[r is not None for r in reports]}")
-
+   
+    
+    bt.logging.info(f"Reports: {reports}")
+    
     rewards = get_rewards(self, reports=reports, ground_truth=ground_truth)
 
     bt.logging.info(f"Scored responses: {rewards}")

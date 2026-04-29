@@ -34,19 +34,14 @@ def get_rewards(
     reports: List[Optional[AuditReport]],
     ground_truth: ChallengeReport,
 ) -> np.ndarray:
-    """
-    Returns an array of rewards for all miner reports in a validation round.
-
-    Args:
-    - reports      : One AuditReport (or None) per miner, in miner-index order.
-    - ground_truth : The ChallengeReport fetched from the challenge API.
-
-    Returns:
-    - np.ndarray of float32, shape (len(reports),), values in [0.0, 1.0].
-    """
-    scores = [reward(report, ground_truth) for report in reports]
-    bt.logging.info(
-        f"get_rewards → miners={len(scores)}  "
-        f"mean={np.mean(scores):.4f}  max={np.max(scores):.4f}"
+    scores = np.array(
+        [reward(report, ground_truth) for report in reports],
+        dtype=np.float32,
     )
-    return np.array(scores, dtype=np.float32)
+
+    bt.logging.info(
+        f"get_rewards → n={len(scores)}  "
+        f"mean={np.mean(scores):.4f}  max={np.max(scores):.4f}  "
+        f"nonzero={np.count_nonzero(scores)}"
+    )
+    return scores
